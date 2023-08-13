@@ -1,0 +1,495 @@
+---
+title: "AML Assignment"
+author: "Justin Ng"
+date: "9/26/2022"
+output: html_document
+---
+
+# LOADING DATASET & LIBRARIES
+
+Reading Excel dataset 
+```{r}
+library(readxl)
+dataset <- read_excel("E Commerce Dataset.xlsx", 
+    sheet = "E Comm")
+View(dataset)
+```
+
+Loading the necessary libraries 
+```{r}
+library(tidyverse) # master library set
+library(DataExplorer) #EDA
+library(mice) # build in imputation model (use regression for imputation)
+library(ROSE) # balancing data
+library(caTools) # stratified sampling - splitting the dataset
+library(caret) # classification & regression training
+library(ROCR) # plot ROC curve
+library(ggplot2) # plot visualizations
+library(e1071) # to build SVM models
+library(rpart) #to build Decision Trees
+library(rpart.plot) #to plot Decision Trees
+```
+
+# INITIAL DATA EXPLORATION
+
+Exploring dataset structure and summary statistic
+```{r}
+introduce(dataset)
+str(dataset)
+summary(dataset)
+plot_str(dataset)
+```
+
+Checking for missing values
+```{r}
+colSums(sapply(dataset,is.na))
+plot_missing (dataset)
+```
+
+Checking for duplicates
+```{r}
+sum(duplicated(dataset))
+```
+
+# PRE-PROCESSING
+
+Converting categorical variables as factors
+```{r}
+dataset$Churn <- as.factor(dataset$Churn)
+dataset$PreferredLoginDevice <- as.factor(dataset$PreferredLoginDevice)
+dataset$CityTier <- as.factor(dataset$CityTier)
+dataset$PreferredPaymentMode <- as.factor(dataset$PreferredPaymentMode)
+dataset$Gender <- as.factor(dataset$Gender)
+dataset$PreferedOrderCat <- as.factor(dataset$PreferedOrderCat)
+dataset$SatisfactionScore <- as.factor(dataset$SatisfactionScore)
+dataset$MaritalStatus <- as.factor(dataset$MaritalStatus)
+dataset$Complain <- as.factor(dataset$Complain)
+
+# Double checking the dataset structure again
+str(dataset)
+summary(dataset)
+```
+
+Removal of CustomerID column, as not needed for the analysis
+```{r}
+dataset2 <- dataset
+dataset2$CustomerID <- NULL
+```
+
+Imputing missing values
+```{r}
+imputed_df <- mice(dataset2, m=5)
+dataset2 <- complete (imputed_df)
+
+# Double check new imputed dataset
+colSums(sapply(dataset2,is.na))
+```
+
+Dealing with Data Inconsistencies
+```{r}
+# Based on the summary statistics, there are data inconsistencies in the PreferredLoginDevice, PreferredPaymentMode and PreferedOrderCat variables. The category "Mobile Phone" & "Phone" and "Mobile" & "Mobile Phone" in the PreferredLoginDevice and PreferedOrderCat variables respectively are essentially the same thing. While the category "CC" & "Credit Card" as well as "COD" & "Cash on Delivery" in the PreferredPaymentMode variables are the same. These inconsistencies will be resolved by combining the similar categories together.
+
+dataset2$PreferredLoginDevice <- factor(dataset2$PreferredLoginDevice,
+                          levels = c('Computer', 'Mobile Phone', 'Phone'),
+                          labels = c('Computer', 'Mobile Phone', 'Mobile Phone'))
+
+dataset2$PreferredPaymentMode <- factor(dataset2$PreferredPaymentMode,
+                          levels = c('Cash on Delivery', 'CC', 'COD', 'Credit Card', 'Debit Card', 'E wallet', 'UPI'),
+                          labels = c('COD', 'Credit Card', 'COD', 'Credit Card', 'Debit Card', 'E wallet', 'UPI'))
+
+dataset2$PreferedOrderCat <- factor(dataset2$PreferedOrderCat,
+                          levels = c('Fashion', 'Grocery', 'Laptop & Accessory', 'Mobile', 'Mobile Phone', 'Others'),
+                          labels = c('Fashion', 'Grocery', 'Laptop & Accessory', 'Mobile Phone', 'Mobile Phone', 'Others'))
+
+
+# To double check data consistencies
+summary(dataset2)
+```
+
+# EDA
+
+Histogram, Density, QQ-Plot, Frequency and Correlation Plots 
+```{r}
+plot_histogram(dataset2) # for numerical variables
+plot_density(dataset2) # for numerical variables
+plot_qq(dataset2) # for numerical variables
+plot_bar(dataset2) # for categorical variables
+plot_correlation(dataset2, type = 'continuous') # for numerical variables
+```
+
+Target variable observation per class
+```{r}
+freq = table(dataset2$Churn);freq
+freq_per = prop.table(table(dataset2$Churn));freq_per
+pie(freq, main = 'Frequency of Churn Rate', label = freq, col = rainbow(2))
+legend("topright", c("Retain","Churn"), cex = 1.5, fill = rainbow(2))
+```
+
+
+# FEATURE ENGINEERING & DATA PREPARATION
+
+Label Encoding
+```{r}
+# Assign a new variable to dataset2 for easier coding process and reference
+df <- dataset2
+
+df$PreferredLoginDevice <- factor(df$PreferredLoginDevice,
+                          levels = c('Computer', 'Mobile Phone'),
+                          labels = c(0, 1))
+
+df$PreferredPaymentMode <- factor(df$PreferredPaymentMode,
+                          levels = c('COD', 'Credit Card', 'Debit Card', 'E wallet', 'UPI'),
+                          labels = c(0, 1, 2, 3, 4))
+
+df$PreferedOrderCat <- factor(df$PreferedOrderCat,
+                          levels = c('Fashion', 'Grocery', 'Laptop & Accessory', 'Mobile Phone', 'Others'),
+                          labels = c(0, 1, 2, 3, 4))
+
+df$Gender <- factor(df$Gender,
+                          levels = c('Female', 'Male'),
+                          labels = c(0, 1))
+
+df$MaritalStatus <- factor(df$MaritalStatus,
+                          levels = c('Divorced', 'Married', 'Single'),
+                          labels = c(0, 1, 2))
+
+```
+
+Log Transformation of positively skewed numeric variables
+```{r}
+log_trans <- log10(df[c(2,5,13,15,16,17,18)]+1)
+plot_histogram(log_trans)
+plot_density(log_trans)
+```
+
+Log Transform original dataset
+```{r}
+df2 <- df
+df2[, c(2,5,13,15,16,17,18)] <- log10(dataset2[, c(2,5,13,15,16,17,18)]+1)
+```
+
+Split data into training and testing sets - using Stratified Sampling
+```{r}
+# Initialize a pseudorandom number generator
+set.seed(123)
+
+# Initialize Stratified Sampling
+split = sample.split(df2, SplitRatio = 0.7)
+train = subset(df2, split == TRUE)
+test = subset(df2, split == FALSE)
+
+# View training & testing sets
+summary(train)
+summary(test)
+head(train)
+head(test)
+dim(train)
+dim(test)
+```
+
+Normalization of training set 
+```{r}
+train2 <- train%>%
+  mutate_at(c(2,5,8,9,13,15,16,17,18,19), funs((.-min(.))/max(.-min(.))))%>%
+  mutate_if(is.numeric, round, digits = 3)
+
+# To view summary statistic after normalization
+summary(train2)
+```
+
+Normalization of testing set
+```{r}
+test2 <- test%>%
+  mutate_at(c(2,5,8,9,13,15,16,17,18,19), funs((.-min(.))/max(.-min(.))))%>%
+  mutate_if(is.numeric, round, digits = 3)
+
+# To view summary statistic after normalization
+summary(test2)
+```
+
+Data Balancing training set using ROSE 
+```{r}
+#ROSE helps us to generate data synthetically (without duplicates) to provide better estimate of original data.
+data_balanced <- ROSE(Churn ~ ., data = train, p=0.5, N=3851, seed = 1)$data
+
+# To view output result after data balancing
+table(data_balanced$Churn)
+prop.table(table(data_balanced$Churn))
+sum(duplicated(data_balanced))
+```
+
+Data Balancing normalized training set using ROSE 
+```{r}
+#ROSE helps us to generate data synthetically (without duplicates) to provide better estimate of original data.
+data_balanced2 <- ROSE(Churn ~ ., data = train2, p=0.5, N=3851, seed = 1)$data
+
+# To view output result after data balancing (normalized)
+table(data_balanced2$Churn)
+prop.table(table(data_balanced2$Churn))
+sum(duplicated(data_balanced2))
+```
+
+# MODELLING
+
+Logistic Regression 
+```{r}
+# Building LoR classifier
+LoR_classifier = glm(data_balanced2$Churn ~.,
+                 data_balanced2,
+                 family = binomial) # use data_balanced2 (normalized) dataset as LoR is highly influence by scales
+
+# To view output of model
+summary(LoR_classifier)
+```
+
+LoR Train & Test Validation
+```{r}
+# Predicting for train set results
+pred_prob_LoR_training <- predict(LoR_classifier, type = 'response', data_balanced2[ ,-1])
+pred_class_LoR_training = ifelse(pred_prob_LoR_training > 0.5, 1, 0)
+cbind(pred_prob_LoR_training, pred_class_LoR_training)
+cm_LoR_training = table(pred_class_LoR_training, data_balanced2$Churn)
+# Confusion matrix for train set
+confusionMatrix(cm_LoR_training, mode = "everything")
+
+# Predicting for test set results
+pred_prob_LoR_testing <- predict(LoR_classifier, type = 'response', test2[ ,-1])
+pred_class_LoR_testing = ifelse(pred_prob_LoR_testing > 0.5, 1, 0)
+cbind(pred_prob_LoR_testing, pred_class_LoR_testing)
+cm_LoR_testing = table(pred_class_LoR_testing, test2$Churn)
+# Confusion matrix for test set
+confusionMatrix(cm_LoR_testing, mode = "everything")
+```
+
+LoR ROC Curve & AUC
+```{r}
+# LoR ROC Curve
+pred_LoR = prediction(pred_class_LoR_testing, test2$Churn)
+perf_LoR = performance(pred_LoR, "tpr", "fpr")
+
+plot(perf_LoR, colorize=T, 
+     main = "ROC curve",
+     ylab = "Sensitivity",
+     xlab = "1-Specificity",
+     print.cutoffs.at=seq(0,1,0.3),
+     text.adj= c(-0.2,1.7))
+
+# LoR AUC
+auc_LoR <- as.numeric(performance(pred_LoR, "auc")@y.values)
+auc_LoR <- round(auc_LoR, 3)
+auc_LoR
+```
+
+SVM - RBF
+```{r}
+# Building Default SVM RBF Kernal
+svm_rbf <- svm(data_balanced2$Churn ~., data = data_balanced2) # use data_balanced2 (normalized) dataset as SVM is highly influence by scales
+
+# To view output of model
+summary(svm_rbf)
+svm_rbf$gamma
+
+
+# Train prediction & confusion matrix
+pred_svm_rbf_train = predict (svm_rbf, data_balanced2)
+
+confusionMatrix(table(pred_svm_rbf_train, data_balanced2$Churn), mode = "everything")
+
+# Test prediction & confusion matrix
+pred_svm_rbf_test = predict (svm_rbf, test2)
+
+confusionMatrix(table(pred_svm_rbf_test, test2$Churn), mode = "everything")
+```
+
+SVM - Linear
+```{r}
+# Linear Kernal
+svm_linear <- svm(data_balanced2$Churn ~., data = data_balanced2, kernel = "linear") # use data_balanced2 (normalized) dataset as SVM is highly influence by scaling
+summary(svm_linear)
+svm_linear$gamma
+
+# Train prediction & confusion matrix
+pred_svm_linear_train = predict (svm_linear, data_balanced2)
+
+confusionMatrix(table(pred_svm_linear_train, data_balanced2$Churn))
+
+# Test prediction & confusion matrix
+pred_svm_linear_test = predict (svm_linear, test2)
+
+confusionMatrix(table(pred_svm_linear_test, test2$Churn))
+```
+
+SVM - Sigmoid
+```{r}
+# Sigmoid Kernal
+svm_sigmoid <- svm(data_balanced2$Churn ~., data = data_balanced2, kernel = "sigmoid") # use data_balanced2 (normalized) dataset as SVM is highly influence by scaling
+summary(svm_sigmoid)
+svm_sigmoid$gamma
+
+# Train prediction & confusion matrix
+pred_svm_sigmoid_train = predict (svm_sigmoid, data_balanced2)
+
+confusionMatrix(table(pred_svm_sigmoid_train, data_balanced2$Churn))
+
+# Test prediction & confusion matrix
+pred_svm_sigmoid_test = predict (svm_sigmoid, test2)
+
+confusionMatrix(table(pred_svm_sigmoid_test, test2$Churn))
+
+```
+
+SVM - Polynomial
+```{r}
+# Polynomial Kernal
+svm_poly <- svm(data_balanced2$Churn ~., data = data_balanced2, kernel = "poly") # use data_balanced2 (normalized) dataset as SVM is highly influence by scaling
+summary(svm_poly)
+svm_poly$gamma
+
+# Train prediction & confusion matrix
+pred_svm_poly_train = predict (svm_poly, data_balanced2)
+
+confusionMatrix(table(pred_svm_poly_train, data_balanced2$Churn))
+
+# Test prediction & confusion matrix
+pred_svm_poly_test = predict (svm_poly, test2)
+
+confusionMatrix(table(pred_svm_poly_test, test2$Churn))
+```
+
+Hyperparameter tuning (grid search)
+```{r}
+# Grid Search
+set.seed(123)
+svm_tuned_model = tune(svm, Churn ~., data = data_balanced2, 
+                   ranges = list(gamma = 2^(-1:1), 
+                                 cost = 2^(-1:1), 
+                                 kernel = c("radial", "linear", "sigmoid", "poly"))) # grid = 3 by 3 by 4 = 36 combinations (running 36 different SVMs)
+
+# To view output of grid search
+summary(svm_tuned_model)
+```
+
+Building the best SVM model based on the best Kernal function and hyperparameter 
+```{r}
+# Building Best SVM Model RBF Kernal
+svm_best <- svm(data_balanced2$Churn~., data = data_balanced2, kernel = "radial", gamma = 0.5, cost = 2) 
+
+# To view output of model
+summary(svm_best)
+```
+
+Best SVM Train & Test Validation
+```{r}
+# Train prediction & confusion matrix
+pred_svm_best_train = predict (svm_best, data_balanced2)
+
+confusionMatrix(table(pred_svm_best_train, data_balanced2$Churn), mode = "everything")
+
+# Test prediction & confusion matrix
+pred_svm_best_test = predict (svm_best, test2)
+
+confusionMatrix(table(pred_svm_best_test, test2$Churn), mode = "everything")
+```
+
+SVM ROC Curve & AUC
+```{r}
+# SVM ROC Curve
+pred_svm = prediction(as.numeric(pred_svm_best_test), test2$Churn)
+perf_svm = performance(pred_svm, "tpr", "fpr")
+
+plot(perf_svm, colorize=T, 
+     main = "ROC curve",
+     ylab = "Sensitivity",
+     xlab = "1-Specificity",
+     print.cutoffs.at=seq(0,1,0.3),
+     text.adj= c(-0.2,1.7))
+
+# SVM AUC
+auc_svm <- as.numeric(performance(pred_svm, "auc")@y.values)
+auc_svm <- round(auc_svm, 3)
+auc_svm
+```
+
+Decision Tree - Gini index (default)
+```{r}
+# Building DT - Gini (default)
+tree = rpart(data_balanced$Churn ~ ., data = data_balanced) # use data_balanced (non-normalized) dataset as DT is NOT influence by scales
+
+# Plotting Tree
+prp(tree)
+plotcp(tree)
+summary(tree)
+```
+
+DT Train & Test Validation (default)
+```{r}
+# Train prediction & confusion matrix
+pred_tree_train = predict(tree, data_balanced, type = "class")
+
+confusionMatrix(table(pred_tree_train, data_balanced$Churn), mode = "everything")
+
+# Test prediction & confusion matrix
+pred_tree_test = predict(tree, test, type = "class")
+
+confusionMatrix(table(pred_tree_test, test$Churn), mode = "everything")
+```
+
+Pruning for DT 
+```{r}
+# 10 fold - Cross Validation repeated 5 times
+trctrl <- trainControl(method = "repeatedcv", number = 10, repeats = 5)
+set.seed(3333)
+dtree_fit <- train(Churn ~., data = data_balanced, method = "rpart",
+                   trControl = trctrl,
+                   tuneLength = 10,
+                   metric = "Accuracy")
+
+
+# To view output of cross validation
+dtree_fit$results
+```
+
+Pruned DT - Gini 
+```{r}
+# Building pruned tree 
+tree_prune = rpart(data_balanced$Churn ~ ., data = data_balanced, method = "class", cp = 0.0032)
+
+# Plotting Pruned Trees 
+prp(tree_prune)
+plotcp(tree_prune) 
+summary(tree_prune)
+```
+
+DT - Gini Train & Test Validation (pruned)
+```{r}
+# Train prediction & confusion matrix
+pred_dt_train = predict(tree_prune, data_balanced, type = "class")
+
+confusionMatrix(table(pred_dt_train, data_balanced$Churn), mode = "everything")
+
+# Test prediction & confusion matrix
+pred_dt_test = predict(tree_prune, test, type = "class")
+
+confusionMatrix(table(pred_dt_test, test$Churn), mode = "everything")
+```
+
+
+DT ROR Curve & AUC
+```{r}
+# DT ROC Curve
+pred_dt = prediction(as.numeric(pred_dt_test), test$Churn)
+perf_dt = performance(pred_dt, "tpr", "fpr")
+
+plot(perf_dt, colorize=T, 
+     main = "ROC curve",
+     ylab = "Sensitivity",
+     xlab = "1-Specificity",
+     print.cutoffs.at=seq(0,1,0.3),
+     text.adj= c(-0.2,1.7))
+
+# DT AUC
+auc_dt <- as.numeric(performance(pred_dt, "auc")@y.values)
+auc_dt <- round(auc_dt, 3)
+auc_dt
+```
+
